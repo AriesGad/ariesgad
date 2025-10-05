@@ -1,0 +1,9 @@
+scanner
+requests
+colorama
+beautifulsoup4
+dnspython
+tqdm
+aiohttp
+websockets
+urllib3
