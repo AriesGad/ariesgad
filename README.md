@@ -33,7 +33,17 @@ The script requires **Python 3.7+**. All necessary Python libraries are listed i
 3.  **Install Python dependencies:**
     ```bash
     pip install -r requirements.txt
-    ```
+
+    
+##installation
+
+git clone https://github.com/AriesGad/ariesgad.git
+
+cd ariesgad
+
+chmod +x ariesgad.py
+
+pip install -r requirements.txt
 
 ## Usage
 
