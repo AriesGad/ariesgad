@@ -67,4 +67,16 @@ git clone https://github.com/danielmiessler/SecLists.git
 
 # To run the Wordlist DNS Scan
 
-python ariesgad.py -m 6 -t example.com -w /path/to/wordlist.txt
+```(Good for quick scans (5,000 words).
+
+SecLists/Discovery/DNS/subdomains-top1million-5000.txt
+
+
+```(​A classic subdomain list.)
+
+SecLists/Discovery/DNS/fierce-hostlist.txt
+
+
+```​(A very large, comprehensive list.)
+
+SecLists/Discovery/DNS/dns-Jhaddix.txt
