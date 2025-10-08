@@ -34,6 +34,14 @@ The script requires **Python 3.7+**. All necessary Python libraries are listed i
     ```bash
     pip install -r requirements.txt
 
+pip install requests aiohttp dnspython colorama tqdm
+
+
+pip install requests aiohttp dnspython colorama tqdm aiodns
+
+
+pip install aiodns
+
     
 ##installation
 
@@ -47,7 +55,16 @@ pip install -r requirements.txt
 
 ## Usage
 
-Run the script from your terminal:
+```Run the script from your terminal:
 
-```bash
 python3 ariesgad.py
+
+
+## install SecLists:
+
+git clone https://github.com/danielmiessler/SecLists.git
+
+
+# To run the Wordlist DNS Scan
+
+python ariesgad.py -m 6 -t example.com -w /path/to/wordlist.txt

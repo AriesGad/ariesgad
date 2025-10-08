@@ -15,6 +15,7 @@ import ipaddress
 from urllib.parse import urlparse
 import traceback 
 import io
+import concurrent.futures # Explicitly imported for ThreadPoolExecutor
 
 # --- External Library Imports (Required for Options 1, 2, 3, 4, 5) ---
 try:
@@ -25,7 +26,7 @@ try:
     import dns.resolver
     import dns.reversename
     import urllib3
-    from tqdm import tqdm
+    from tqdm import tqdm # Library used for progress bar
     import asyncio
     import aiohttp
     import websockets
@@ -45,9 +46,9 @@ colorama_init(autoreset=True)
 # Author Name: ♈️AriesGad♈️
 
 # API Keys (Placeholders - **MUST BE UPDATED BY USER**)
-VT_API_KEY = "YOUR_VIRUSTOTAL_API_KEY_HERE"
-SHODAN_API_KEY = "YOUR_SHODAN_API_KEY_HERE"
-SECURITYTRAILS_API_KEY = "YOUR_SECURITYTRAILS_API_KEY_HERE"
+VT_API_KEY = "11ae53bcdcfa8d42d47347073f0ddbe342180f9f5d0ddbe342180f9f5d219d8d1e2df30db14103e2"
+SHODAN_API_KEY = "s35jHyUC1RO0riYFS4B9yQQ66KppWtiD"
+SECURITYTRAILS_API_KEY = "lvO0DQkpeNZeRBfxAriEzE3R4yt-1oFJ"
 CENSYS_UID = None
 CENSYS_SECRET = None
 
@@ -76,10 +77,12 @@ OUTPUT_FILES = {
     2: "Subdomains.txt",
     3: "Zero-rate.txt",
     4: "SNI_SSL.txt",
-    5: "CIDR.txt"
+    5: "CIDR.txt",
+    6: "Wordlist_DNS_Results.txt" # New output file for Option 6
 }
 
 # Setup logging for Option 1 and 4 debug
+# We keep the basic logging config and add a handler in run_option_1
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 def get_timestamp_filename(option):
@@ -103,13 +106,15 @@ MAIN_BANNER = r"""
 ···············································································
 """
 
+# UPDATED MENU OPTIONS: 6 is Wordlist Scan, 7 is Exit
 MENU_OPTIONS = {
     1: "Reverse IP/Host LookUp",
     2: "Subdomains Enumeration",
     3: "ISP Zero-Rated Check",
     4: "WS/SSL/HTTP/SNI/CDN Check",
     5: "CIDR IP+Name Resolve",
-    6: "Exit"
+    6: "Wordlist DNS Scan", # New Option
+    7: "Exit"              # Exit moved to 7
 }
 
 def display_menu():
@@ -119,11 +124,19 @@ def display_menu():
     print(Fore.YELLOW + "====================================================================================" + Style.RESET_ALL)
     print(Fore.YELLOW + f"                          AriesGad Scanner (Author: ♈️AriesGad♈️)" + Style.RESET_ALL)
     print(Fore.YELLOW + "====================================================================================" + Style.RESET_ALL)
-    for key, value in MENU_OPTIONS.items():
-        filename = OUTPUT_FILES.get(key, "N/A")
-        print(Fore.GREEN + f"  [{key}] " + Fore.WHITE + f"{value} ({filename})" + Style.RESET_ALL)
+    
+    # Iterate through all keys up to 7
+    for key in sorted(MENU_OPTIONS.keys()):
+        value = MENU_OPTIONS[key]
+        if key == 7: # Special case for Exit
+            print(Fore.RED + f"  [{key}] " + Fore.WHITE + f"{value}" + Style.RESET_ALL)
+        else:
+            filename = OUTPUT_FILES.get(key, "N/A")
+            print(Fore.GREEN + f"  [{key}] " + Fore.WHITE + f"{value} ({filename})" + Style.RESET_ALL)
+            
     print(Fore.YELLOW + "====================================================================================" + Style.RESET_ALL)
-    return input(Fore.MAGENTA + "Enter your option (1-6): " + Style.RESET_ALL).strip()
+    return input(Fore.MAGENTA + "Enter your option (1-7): " + Style.RESET_ALL).strip()
+
 
 def load_targets(target_input):
     """Loads a list of targets from a file or returns the single target."""
@@ -139,18 +152,35 @@ def load_targets(target_input):
         targets.append(target_input)
     return targets
 
-def prompt_and_execute(option, prompt_text, exec_function):
-    """Handles the user prompt, execution, and return to menu."""
+def prompt_and_execute(option, prompt_text, exec_function, wordlist_required=False):
+    """
+    Handles the user prompt, execution, and return to menu.
+    """
     os.system('cls' if os.name == 'nt' else 'clear')
     output_file = get_timestamp_filename(option)
     
     print(Fore.YELLOW + f"--- {MENU_OPTIONS[option]} ---" + Style.RESET_ALL)
-    print(Fore.BLUE + f"[*] NOTE: Output will overwrite the file: {output_file}" + Style.RESET_ALL)
-
+    
+    # Target input
     target = input(Fore.CYAN + prompt_text + Style.RESET_ALL).strip()
     if not target:
-        print(Fore.RED + "Input cannot be empty." + Style.RESET_ALL)
+        print(Fore.RED + "Target input cannot be empty." + Style.RESET_ALL)
+        input(Fore.YELLOW + "Press ENTER to return to the main menu..." + Style.RESET_ALL)
         return
+        
+    wordlist_path = None
+    if wordlist_required:
+        wordlist_path = input(Fore.CYAN + "Enter path to wordlist file (e.g., /path/to/seclists.txt): " + Style.RESET_ALL).strip()
+        if not wordlist_path or not os.path.exists(wordlist_path):
+            print(Fore.RED + f"Error: Wordlist file not found at '{wordlist_path}'." + Style.RESET_ALL)
+            input(Fore.YELLOW + "Press ENTER to return to the main menu..." + Style.RESET_ALL)
+            return
+
+    # Output message
+    if option == 5:
+        print(Fore.BLUE + f"[*] NOTE: Final aligned output will be saved to: {output_file.replace('.txt', '_resolved.txt')}" + Style.RESET_ALL)
+    else:
+        print(Fore.BLUE + f"[*] NOTE: Output will overwrite the file: {output_file}" + Style.RESET_ALL)
 
     print(Fore.BLUE + f"[*] Starting scan..." + Style.RESET_ALL)
     time.sleep(1)
@@ -158,6 +188,8 @@ def prompt_and_execute(option, prompt_text, exec_function):
     try:
         if option == 4:
             asyncio.run(exec_function(target, output_file))
+        elif option == 6:
+            exec_function(target, wordlist_path, output_file) # Option 6 takes 3 arguments
         else:
             exec_function(target, output_file)
     except Exception as e:
@@ -165,12 +197,20 @@ def prompt_and_execute(option, prompt_text, exec_function):
         traceback.print_exc() 
 
     print(Fore.YELLOW + "\n====================================================================================" + Style.RESET_ALL)
-    input(Fore.GREEN + f"Scan finished. Results saved to {output_file}. Press ENTER to return to the main menu..." + Style.RESET_ALL)
+    
+    final_filename = output_file
+    if option == 5:
+        final_filename = output_file.replace('.txt', '_resolved.txt')
+
+    print(Fore.GREEN + f"Scan finished. Results saved to {final_filename}. " + Style.RESET_ALL)
+    input(Fore.YELLOW + "Press ENTER to return to the main menu..." + Style.RESET_ALL) 
 
 
 # ==============================================================================
 # ------------------------------- OPTION 1: REVAGG -----------------------------
 # ==============================================================================
+
+# ... (run_option_1 and its helpers are unchanged) ...
 
 def o1_resolve_ip(host):
     """Resolve host to IP."""
@@ -272,6 +312,7 @@ def o1_print_table(rows, log_file, cand_output_file):
 
 # --- O1 Source Functions (Adapted) ---
 def o1_query_hackertarget(ip):
+    """Reverse IP Lookup from HackerTarget (Quick but limited free tier)."""
     results = set()
     try:
         url = f"https://api.hackertarget.com/reverseiplookup/?q={ip}"
@@ -282,25 +323,32 @@ def o1_query_hackertarget(ip):
     return results
 
 def o1_query_viewdns(ip):
+    """Reverse IP Lookup by scraping ViewDNS.info (More domains found)."""
     results = set()
     try:
-        url = f"https://viewdns.info/reverseip/?host={ip}&t=1"
+        # Using a reliable scraping URL for ViewDNS that returns a full list
+        url = f"https://viewdns.info/reverseip/?host={ip}&t=1" 
         r = requests.get(url, headers=O1_HEADERS, timeout=DEFAULT_TIMEOUT)
         if r.status_code == 200:
             soup = BeautifulSoup(r.text, "html.parser")
+            # The results are usually in a table with border=1
             table = soup.find("table", attrs={"border": "1"})
             if table:
                 rows = table.find_all("tr")
-                for row in rows[1:]:
+                for row in rows[1:]: # Skip header row
                     cols = row.find_all("td")
                     if len(cols) >= 1:
                         hostname = cols[0].get_text(strip=True)
                         if hostname and hostname != "-" and hostname.lower() != "host":
                             results.add(hostname)
+            else:
+                # Fallback for cases where the table isn't found
+                logging.warning(f"ViewDNS table not found for {ip}. Check HTML structure.")
     except Exception as e: logging.error(f"viewdns error for {ip}: {e}")
     return results
 
 def o1_query_crtsh_for_domain(domain):
+    """Certificate Transparency lookup for related domains."""
     results = set()
     try:
         q = f"%25.{domain}"
@@ -308,12 +356,17 @@ def o1_query_crtsh_for_domain(domain):
         r = requests.get(url, headers=O1_HEADERS, timeout=DEFAULT_TIMEOUT)
         if r.status_code == 200:
             try:
-                data = r.json()
+                # crt.sh returns JSON (sometimes with a leading newline, hence the strip/loads)
+                data = json.loads(r.text.strip())
                 for item in data:
                     name = item.get("name_value")
                     if name:
-                        results.update(n.strip().rstrip(".") for n in re.split(r"\s+", name) if n)
-            except Exception as e: logging.error(f"crt.sh parse error for {domain}: {e}")
+                        # Common names can be space-separated or comma-separated lists
+                        results.update(n.strip().rstrip(".") for n in re.split(r"[\s,]+", name) if n)
+            except json.JSONDecodeError as e: 
+                logging.error(f"crt.sh JSON parse error for {domain}: {e}")
+            except Exception as e: 
+                logging.error(f"crt.sh generic parse error for {domain}: {e}")
     except Exception as e: logging.error(f"crt.sh error for {domain}: {e}")
     return results
 
@@ -331,6 +384,8 @@ def run_option_1(target, live_output_file):
     print(f"[*] Aggregating candidates from various sources...")
     ips = set()
     domain = None
+    
+    # Target is an IP or a domain
     if re.match(r"^\d+\.\d+\.\d+\.\d+$", target):
         ips.add(target)
     else:
@@ -340,6 +395,14 @@ def run_option_1(target, live_output_file):
             ips.add(ip)
         except Exception:
             pass
+            
+    # Target is a file containing IPs/Domains
+    if os.path.isfile(target):
+        for line in load_targets(target):
+            if re.match(r"^\d+\.\d+\.\d+\.\d+$", line):
+                ips.add(line)
+            else:
+                domain = line # We'll only use the last domain from the file for crt.sh to keep it simple
 
     if not ips and not domain:
         print(Fore.RED + "No valid IP or domain to scan." + Style.RESET_ALL)
@@ -356,8 +419,11 @@ def run_option_1(target, live_output_file):
             all_candidates.add(ptr)
         except Exception:
             pass
-        all_candidates.update(o1_query_hackertarget(ip))
-        all_candidates.update(o1_query_viewdns(ip))
+            
+        # Use both sources for better coverage
+        all_candidates.update(o1_query_hackertarget(ip)) # Quick source
+        all_candidates.update(o1_query_viewdns(ip))      # More verbose source
+        
         time.sleep(O1_SLEEP_BETWEEN_QUERIES)
 
     if domain:
@@ -389,10 +455,11 @@ def run_option_1(target, live_output_file):
 
     logging.getLogger().removeHandler(file_handler)
 
-
 # ==============================================================================
 # ------------------------- OPTION 2: SUBDOMAIN ENUMERATION --------------------
 # ==============================================================================
+
+# ... (run_option_2 and its helpers are unchanged) ...
 
 def o2_resolve_domain(full_domain):
     """Resolve the domain to IP if possible."""
@@ -402,9 +469,13 @@ def o2_resolve_domain(full_domain):
     except socket.gaierror:
         return None
 
+# --- API-DEPENDENT SOURCES (Skipped if placeholder key is used) ---
+
 def o2_get_subdomains_from_virustotal(domain):
     """Fetch subdomains from VirusTotal API v3."""
-    if VT_API_KEY == "YOUR_VIRUSTOTAL_API_KEY_HERE": return []
+    if VT_API_KEY == "11ae53bcdcfa8d42d47347073f0ddbe342180f9f5d0ddbe342180f9f5d219d8d1e2df30db14103e2": 
+        print(f"{Fore.YELLOW}  [INFO] Skipping VirusTotal: API key is a placeholder.{Style.RESET_ALL}")
+        return []
     url = f"https://www.virustotal.com/api/v3/domains/{domain}/subdomains"
     headers = {"Authorization": f"Bearer {VT_API_KEY}"}
     subdomains = set()
@@ -413,45 +484,36 @@ def o2_get_subdomains_from_virustotal(domain):
         if response.status_code == 200:
             data = response.json().get('data', [])
             subdomains.update(item['id'] for item in data)
-        else: print(f"VT Error: Status {response.status_code}")
-    except Exception as e: print(f"Error fetching from VirusTotal: {e}")
+        elif response.status_code in [401, 403]:
+             print(f"{Fore.RED}  [ERROR] VirusTotal returned Status {response.status_code}: API Key is invalid or expired.{Style.RESET_ALL}")
+        else: print(f"  [ERROR] VT Error: Status {response.status_code}")
+    except Exception as e: print(f"  [ERROR] Error fetching from VirusTotal: {e}")
     return list(subdomains)
 
-def o2_get_subdomains_from_crtsh(domain):
-    url = f"https://crt.sh/?q=%.{domain}&output=json"
+def o2_get_subdomains_from_securitytrails(domain):
+    """Fetch subdomains from SecurityTrails API."""
+    if SECURITYTRAILS_API_KEY == "lvO0DQkpeNZeRBfxAriEzE3R4yt-1oFJ": 
+        print(f"{Fore.YELLOW}  [INFO] Skipping SecurityTrails: API key is a placeholder.{Style.RESET_ALL}")
+        return []
+    url = f"https://api.securitytrails.com/v1/domain/{domain}/subdomains"
+    headers = {"APIKEY": SECURITYTRAILS_API_KEY}
     subdomains = set()
     try:
-        response = requests.get(url, timeout=DEFAULT_TIMEOUT)
-        if response.status_code == 200:
-            data = json.loads(response.text)
-            for entry in data:
-                if 'name_value' in entry:
-                    names = entry['name_value'].split('\n')
-                    for name in names:
-                        name = name.strip().lstrip('*.').rstrip('.')
-                        if name.endswith(domain) and name != domain:
-                            subdomain = name[:-len(domain)].rstrip('.')
-                            if subdomain: subdomains.add(name)
-    except Exception: pass
-    return list(subdomains)
-
-def o2_get_subdomains_from_certspotter(domain):
-    url = f"https://certspotter.com/api/v0/certs?domain={domain}&expand=dns_names&include=subdomains"
-    subdomains = set()
-    try:
-        response = requests.get(url, timeout=DEFAULT_TIMEOUT)
+        response = requests.get(url, headers=headers, timeout=DEFAULT_TIMEOUT)
         if response.status_code == 200:
             data = response.json()
-            for cert in data:
-                for dns in cert.get('dns_names', []):
-                    dns = dns.rstrip('.')
-                    if dns.endswith(domain) and dns != domain:
-                        subdomains.add(dns)
+            full_domains = [f"{sub}.{domain}" for sub in data.get('subdomains', [])]
+            subdomains.update(full_domains)
+        elif response.status_code in [401, 403]:
+             print(f"{Fore.RED}  [ERROR] SecurityTrails returned Status {response.status_code}: API Key is invalid or expired.{Style.RESET_ALL}")
     except Exception: pass
     return list(subdomains)
 
 def o2_get_subdomains_from_shodan(domain):
-    if SHODAN_API_KEY == "YOUR_SHODAN_API_KEY_HERE": return []
+    """Fetch subdomains from Shodan API."""
+    if SHODAN_API_KEY == "s35jHyUC1RO0riYFS4B9yQQ66KppWtiD": 
+        print(f"{Fore.YELLOW}  [INFO] Skipping Shodan: API key is a placeholder.{Style.RESET_ALL}")
+        return []
     url = "https://api.shodan.io/shodan/host/search"
     params = {"key": SHODAN_API_KEY, "query": f'hostname:"*.{domain}"'}
     subdomains = set()
@@ -464,63 +526,207 @@ def o2_get_subdomains_from_shodan(domain):
                 for hostname in hostnames:
                     if hostname.endswith('.' + domain) and hostname != domain:
                         subdomains.add(hostname)
+        elif response.status_code in [401, 403]:
+             print(f"{Fore.RED}  [ERROR] Shodan returned Status {response.status_code}: API Key is invalid or expired.{Style.RESET_ALL}")
     except Exception: pass
     return list(subdomains)
 
-def o2_get_subdomains_from_securitytrails(domain):
-    if SECURITYTRAILS_API_KEY == "YOUR_SECURITYTRAILS_API_KEY_HERE": return []
-    url = f"https://api.securitytrails.com/v1/domain/{domain}/subdomains"
-    headers = {"APIKEY": SECURITYTRAILS_API_KEY}
+
+# --- PASSIVE SOURCES (NO API KEY REQUIRED) ---
+
+def o2_get_subdomains_from_crtsh(domain):
+    """Fetch subdomains from crt.sh (Certificate Transparency Log)."""
+    print(f"  [+] Querying crt.sh...")
+    url = f"https://crt.sh/?q=%.{domain}&output=json"
     subdomains = set()
     try:
-        response = requests.get(url, headers=headers, timeout=DEFAULT_TIMEOUT)
+        response = requests.get(url, timeout=DEFAULT_TIMEOUT)
+        if response.status_code == 200:
+            data = json.loads(response.text.strip())
+            for entry in data:
+                if 'name_value' in entry:
+                    # Split by newline and handle comma/space separated entries
+                    names = re.split(r"[\s,]+", entry['name_value'])
+                    for name in names:
+                        name = name.strip().lstrip('*.').rstrip('.')
+                        if name.endswith(domain) and name != domain:
+                            subdomains.add(name)
+    except Exception as e: 
+        print(f"  [ERROR] crt.sh failed: {e}")
+    return list(subdomains)
+
+def o2_get_subdomains_from_certspotter(domain):
+    """Fetch subdomains from Certspotter (Certificate Transparency Log)."""
+    print(f"  [+] Querying Certspotter...")
+    # This endpoint is a public API and does not typically require an API key
+    url = f"https://certspotter.com/api/v0/certs?domain={domain}&expand=dns_names&include=subdomains"
+    subdomains = set()
+    try:
+        response = requests.get(url, timeout=DEFAULT_TIMEOUT)
         if response.status_code == 200:
             data = response.json()
-            full_domains = [f"{sub}.{domain}" for sub in data.get('subdomains', [])]
-            subdomains.update(full_domains)
-    except Exception: pass
+            for cert in data:
+                for dns in cert.get('dns_names', []):
+                    dns = dns.rstrip('.')
+                    if dns.endswith(domain) and dns != domain:
+                        subdomains.add(dns)
+    except Exception as e:
+        print(f"  [ERROR] Certspotter failed: {e}")
+    return list(subdomains)
+
+def o2_get_subdomains_from_rapiddns(domain):
+    """Fetches subdomains from RapidDNS by attempting to scrape the result page."""
+    print(f"  [+] Querying RapidDNS (Scraping)...")
+    subdomains = set()
+    try:
+        # RapidDNS search page URL
+        url = f"https://rapiddns.io/subdomain/{domain}?full=1#result"
+        headers = {'User-Agent': O1_USER_AGENT}
+        response = requests.get(url, headers=headers, timeout=DEFAULT_TIMEOUT)
+
+        if response.status_code == 200:
+            # Simple regex to find the subdomains in the resulting HTML table
+            pattern = re.compile(r'<td>([a-zA-Z0-9.-]+\.' + re.escape(domain) + r')</td>')
+            found = pattern.findall(response.text)
+            subdomains.update(sub.lower().strip() for sub in found)
+        
+        elif response.status_code == 403:
+            print("  [INFO] RapidDNS returned 403 (might be rate-limited or blocked).")
+        
+    except requests.exceptions.RequestException as e:
+        print(f"  [ERROR] RapidDNS scraping failed: {e}")
+    return list(subdomains)
+
+def o2_get_subdomains_from_hackertarget_passive(domain):
+    """Fetches subdomains from HackerTarget's public hostsearch tool."""
+    print(f"  [+] Querying HackerTarget (Hostsearch)...")
+    subdomains = set()
+    try:
+        # This endpoint is generally reliable for a small number of queries
+        url = f"https://api.hackertarget.com/hostsearch/?q={domain}"
+        response = requests.get(url, timeout=DEFAULT_TIMEOUT)
+        
+        if response.status_code == 200:
+            for line in response.text.splitlines():
+                parts = line.split(',')
+                # Hostname is typically the first column
+                if parts and len(parts) > 0 and f".{domain}" in parts[0]:
+                    subdomains.add(parts[0].lower().strip())
+        else:
+            print(f"  [ERROR] HackerTarget failed with status code: {response.status_code}")
+    except requests.exceptions.RequestException as e:
+        print(f"  [ERROR] HackerTarget failed: {e}")
+    return list(subdomains)
+
+def o2_get_subdomains_from_alienvault_otx(domain):
+    """Fetches subdomains from AlienVault OTX (Open Threat Exchange) passive DNS."""
+    print(f"  [+] Querying AlienVault OTX...")
+    subdomains = set()
+    try:
+        # Public API endpoint for domain passive DNS
+        url = f"https://otx.alienvault.com/api/v1/indicators/domain/{domain}/passive_dns"
+        response = requests.get(url, timeout=DEFAULT_TIMEOUT)
+
+        if response.status_code == 200:
+            data = response.json()
+            for record in data.get('passive_dns', []):
+                hostname = record.get('hostname')
+                if hostname and f".{domain}" in hostname:
+                    subdomains.add(hostname.lower().strip())
+        else:
+            print(f"  [ERROR] AlienVault OTX failed with status code: {response.status_code}")
+    except Exception as e:
+        print(f"  [ERROR] AlienVault OTX failed: {e}")
+    return list(subdomains)
+
+
+def o2_get_subdomains_from_anubis(domain):
+    """Fetches subdomains from a public AnubisDB repository (if available)."""
+    print(f"  [+] Querying AnubisDB...")
+    subdomains = set()
+    try:
+        # Anubis often provides a public data link for its scan results as a JSON array
+        url = f"https://jonlu.ca/anubis/subdomains/{domain}" 
+        response = requests.get(url, timeout=DEFAULT_TIMEOUT)
+
+        if response.status_code == 200:
+            data = response.json()
+            # Expecting a list of strings
+            for sub in data:
+                if isinstance(sub, str) and f".{domain}" in sub:
+                    subdomains.add(sub.lower().strip())
+        else:
+            print(f"  [ERROR] AnubisDB failed with status code: {response.status_code}")
+    except Exception as e:
+        print(f"  [ERROR] AnubisDB failed: {e}")
     return list(subdomains)
 
 
 def run_option_2(target_input, output_file):
-    """Main logic for Option 2: Subdomains Enumeration."""
+    """Main logic for Option 2: Subdomains Enumeration (Hardened Passive Sources)."""
 
     domains = load_targets(target_input)
-
     all_found = []
+
+    # List of all passive sources that generally don't require an API key
+    passive_sources = [
+        o2_get_subdomains_from_crtsh,
+        o2_get_subdomains_from_certspotter,
+        o2_get_subdomains_from_rapiddns,
+        o2_get_subdomains_from_hackertarget_passive,
+        o2_get_subdomains_from_alienvault_otx,
+        o2_get_subdomains_from_anubis
+    ]
+    
+    # List of API sources (only run if API key is not default)
+    api_sources = [
+        o2_get_subdomains_from_virustotal,
+        o2_get_subdomains_from_securitytrails,
+        o2_get_subdomains_from_shodan
+    ]
 
     for domain in domains:
         print(Fore.YELLOW + f"\n[*] Scanning domain: {domain}" + Style.RESET_ALL)
         
-        prefixes = set(f"{p}.{domain}" for p in O2_COMMON_SUBDOMAINS)
+        candidates = set(f"{p}.{domain}" for p in O2_COMMON_SUBDOMAINS)
         
-        print(Fore.CYAN + "  Fetching from passive sources..." + Style.RESET_ALL)
-        prefixes.update(o2_get_subdomains_from_crtsh(domain))
-        prefixes.update(o2_get_subdomains_from_certspotter(domain))
-        prefixes.update(o2_get_subdomains_from_virustotal(domain))
-        prefixes.update(o2_get_subdomains_from_securitytrails(domain))
-        prefixes.update(o2_get_subdomains_from_shodan(domain))
+        # 1. Run all PASSIVE Sources
+        print(Fore.CYAN + "  Fetching from passive sources (No API Key Required)..." + Style.RESET_ALL)
+        for source_func in passive_sources:
+            candidates.update(source_func(domain))
         
-        prefixes.add(domain)
+        # 2. Run API Sources (Only if key is set)
+        print(Fore.CYAN + "  Fetching from API sources (If Keys are configured)..." + Style.RESET_ALL)
+        for source_func in api_sources:
+            candidates.update(source_func(domain))
 
-        full_domains = sorted(list(prefixes))
+        candidates.add(domain)
+
+        full_domains = sorted(list(candidates))
         
-        print(Fore.CYAN + f"  Found {len(full_domains)} unique candidates." + Style.RESET_ALL)
+        print(Fore.CYAN + f"  Found {len(full_domains)} unique candidates. Starting DNS resolution..." + Style.RESET_ALL)
         
         found_current = []
-        with tqdm(total=len(full_domains), desc="Resolving", colour='GREEN', unit=" hosts") as pbar:
-            for full_domain in full_domains:
-                pbar.set_description(f"Current: {full_domain[:25]}...")
-                ip = o2_resolve_domain(full_domain)
-                if ip:
-                    found_current.append((full_domain, ip))
-                pbar.update(1)
-        
+        # Use a higher number of workers for parallel DNS resolution
+        with concurrent.futures.ThreadPoolExecutor(max_workers=30) as executor:
+            future_to_domain = {executor.submit(o2_resolve_domain, d): d for d in full_domains}
+            
+            with tqdm(total=len(full_domains), desc="Resolving", colour='GREEN', unit=" hosts") as pbar:
+                for future in concurrent.futures.as_completed(future_to_domain):
+                    domain_name = future_to_domain[future]
+                    try:
+                        ip = future.result()
+                        if ip:
+                            found_current.append((domain_name, ip))
+                    except Exception:
+                        pass
+                    pbar.update(1)
+
         all_found.extend(found_current)
 
     if all_found:
         host_max = max(len(sub) for sub, _ in all_found) if all_found else 30
-        host_max = max(host_max, 30) 
+        host_max = max(host_max, 30)
         ip_width = 15
         
         col_sep = " - "
@@ -537,7 +743,7 @@ def run_option_2(target_input, output_file):
             f.write(sep + "\n")
             
             for sub, ip in sorted(all_found):
-                print(Fore.BLUE + f"{sub:<{host_max}}" + Style.RESET_ALL + col_sep + Fore.GREEN + f"{ip:<{ip_width}}" + Style.RESET_ALL)
+                tqdm.write(Fore.BLUE + f"{sub:<{host_max}}" + Style.RESET_ALL + col_sep + Fore.GREEN + f"{ip:<{ip_width}}" + Style.RESET_ALL)
                 f.write(f"{sub:<{host_max}}{col_sep}{ip:<{ip_width}}\n")
     else:
         print(Fore.RED + "No subdomains found or resolved." + Style.RESET_ALL)
@@ -546,6 +752,8 @@ def run_option_2(target_input, output_file):
 # ==============================================================================
 # ------------------------- OPTION 3: ISP ZERO-RATED CHECK ---------------------
 # ==============================================================================
+
+# ... (run_option_3 and its helpers are unchanged) ...
 
 def o3_resolve_domain(domain, resolver="8.8.8.8"):
     """Resolve domain to IPv4 and IPv6 addresses using a specific resolver."""
@@ -585,12 +793,6 @@ def o3_check_zero_rate_python(ip, domain, proto, timeout=DEFAULT_TIMEOUT):
 
     try:
         # Use requests with specific IP binding if possible (requires advanced networking setup, simplified here)
-        # requests.get directly against the IP can cause SSL issues if the host header doesn't match the IP cert.
-        # We rely on the request library's ability to send the Host header correctly and bind if a custom adapter is used.
-        # For simple requests, we use the domain name, relying on DNS being handled or ignoring SSL errors.
-        
-        # Force a connection to a specific IP by passing it as the URL host, but setting the Host header.
-        # This is complex in Python's requests/urllib3 without custom adapters. We use the domain name for simplicity.
         
         r = requests.get(url, headers={'Host': domain, 'User-Agent': O1_USER_AGENT}, 
                          timeout=timeout, verify=False, allow_redirects=True)
@@ -707,19 +909,19 @@ def run_option_3(target_input, output_file):
         verdict_colored, verdict_clean = o3_get_verdict(sys_dns_ok, http4_ok, https4_ok, http6_ok, https6_ok, env_zero_flag, zero_rate_detected)
         
         # Console Summary Output
-        print(Fore.BLUE + f"\n[SUMMARY] {Fore.YELLOW}{domain}{Style.RESET_ALL}")
+        tqdm.write(Fore.BLUE + f"\n[SUMMARY] {Fore.YELLOW}{domain}{Style.RESET_ALL}")
         printf_format = "%-20s %-12s"
         
-        print(printf_format % ("IPv4 HTTP:", Fore.GREEN + "OK" + Style.RESET_ALL if http4_ok else Fore.RED + "BLOCKED" + Style.RESET_ALL))
-        print(printf_format % ("IPv4 HTTPS:", Fore.GREEN + "OK" + Style.RESET_ALL if https4_ok else Fore.RED + "BLOCKED" + Style.RESET_ALL))
-        print(printf_format % ("IPv6 HTTP:", Fore.GREEN + "OK" + Style.RESET_ALL if http6_ok else Fore.RED + "BLOCKED" + Style.RESET_ALL))
-        print(printf_format % ("IPv6 HTTPS:", Fore.GREEN + "OK" + Style.RESET_ALL if https6_ok else Fore.RED + "BLOCKED" + Style.RESET_ALL))
-        print(printf_format % ("Zero Indicators:", Fore.YELLOW + "YES" + Style.RESET_ALL if zero_rate_detected else Fore.GREEN + "NO" + Style.RESET_ALL))
-        print(printf_format % ("Env Zero-Flag:", Fore.YELLOW + "YES" + Style.RESET_ALL if env_zero_flag else Fore.GREEN + "NO" + Style.RESET_ALL))
+        tqdm.write(printf_format % ("IPv4 HTTP:", Fore.GREEN + "OK" + Style.RESET_ALL if http4_ok else Fore.RED + "BLOCKED" + Style.RESET_ALL))
+        tqdm.write(printf_format % ("IPv4 HTTPS:", Fore.GREEN + "OK" + Style.RESET_ALL if https4_ok else Fore.RED + "BLOCKED" + Style.RESET_ALL))
+        tqdm.write(printf_format % ("IPv6 HTTP:", Fore.GREEN + "OK" + Style.RESET_ALL if http6_ok else Fore.RED + "BLOCKED" + Style.RESET_ALL))
+        tqdm.write(printf_format % ("IPv6 HTTPS:", Fore.GREEN + "OK" + Style.RESET_ALL if https6_ok else Fore.RED + "BLOCKED" + Style.RESET_ALL))
+        tqdm.write(printf_format % ("Zero Indicators:", Fore.YELLOW + "YES" + Style.RESET_ALL if zero_rate_detected else Fore.GREEN + "NO" + Style.RESET_ALL))
+        tqdm.write(printf_format % ("Env Zero-Flag:", Fore.YELLOW + "YES" + Style.RESET_ALL if env_zero_flag else Fore.GREEN + "NO" + Style.RESET_ALL))
 
-        print(Fore.BLUE + f"\n[VERDICT]{Style.RESET_ALL}")
-        print(f"%-12s %-12s" % ("", verdict_colored))
-        print("-" * 50)
+        tqdm.write(Fore.BLUE + f"\n[VERDICT]{Style.RESET_ALL}")
+        tqdm.write(f"%-12s %-12s" % ("", verdict_colored))
+        tqdm.write("-" * 50)
         
         all_results.append({
             "Domain": domain,
@@ -762,11 +964,12 @@ def run_option_3(target_input, output_file):
                         f"{r['Verdict']}\n")
                 f.write(line)
 
+
 # ==============================================================================
 # ------------------------- OPTION 4: WS/SSL/HTTP/SNI/CDN CHECK ----------------
 # ==============================================================================
 
-# ... (Option 4 functions remain the same as they were already in Python and Async) ...
+# ... (run_option_4 and its helpers are unchanged) ...
 
 def o4_get_cloudflare_ip_ranges():
     global O4_CLOUDFLARE_IPS
@@ -938,7 +1141,7 @@ async def run_option_4(target_input, output_file):
                 f"{get_colored_field(get_status_text(result['sni_ssl_tls']), col_widths['sni_ssl_tls'], Fore.WHITE)}"
                 f"{get_colored_field(get_status_text(result['cdn']), col_widths['cdn'], Fore.RED)}"
             )
-            print(row_console)
+            tqdm.write(row_console)
 
             row_file = (f"{host_disp:<{col_widths['host']}}"
                         f"{ip_disp:<{col_widths['ip']}}"
@@ -954,6 +1157,8 @@ async def run_option_4(target_input, output_file):
 # ------------------------- OPTION 5: CIDR RESOLUTION --------------------------
 # ==============================================================================
 
+# ... (run_option_5 and its helpers are unchanged) ...
+
 def o5_resolve_cidr_range(cidr_range):
     """
     Scans a CIDR range, resolves PTR records for each IP, and returns
@@ -961,37 +1166,46 @@ def o5_resolve_cidr_range(cidr_range):
     """
     resolved_hosts = []
     
+    # Manually configure a reliable DNS resolver
+    resolver = dns.resolver.Resolver(configure=False)
+    resolver.nameservers = ['8.8.8.8', '1.1.1.1'] 
+    resolver.timeout = 5.0
+    resolver.lifetime = 10.0
+    
     try:
         network = ipaddress.ip_network(cidr_range, strict=False)
         total_ips = len(list(network.hosts()))
         
-        print(Fore.CYAN + f"[*] Resolving PTR for {cidr_range} ({total_ips} addresses)..." + Style.RESET_ALL)
+        print(Fore.CYAN + f"[*] Resolving PTR for {cidr_range} ({total_ips} addresses) using {resolver.nameservers}..." + Style.RESET_ALL)
 
+        # Use tqdm for a progress bar
         with tqdm(network.hosts(), total=total_ips, desc="Resolving IPs", unit=" hosts", colour='BLUE') as pbar:
-            for ip_obj in pbar:
+            for ip_obj in ipaddress.ip_network(cidr_range).hosts():
                 ip = str(ip_obj)
                 pbar.set_description(f"Current: {ip}")
                 
                 try:
                     # Perform reverse DNS lookup (PTR)
                     rev_name = dns.reversename.from_address(ip)
-                    answers = dns.resolver.resolve(rev_name, 'PTR')
+                    
+                    # Use the configured resolver and set a robust lifetime (8.0 seconds)
+                    answers = resolver.resolve(rev_name, 'PTR', lifetime=8.0) 
                     
                     # Get the hostname, cleaning up the trailing dot
                     hostname = str(answers[0]).rstrip('.')
                     
                     if hostname:
-                        # Console output
-                        print(f"{Fore.GREEN}{ip:<15}{Style.RESET_ALL} -> {Fore.BLUE}{hostname}{Style.RESET_ALL}")
+                        # Console output - Use pbar.write() to prevent progress bar interference
+                        pbar.write(f"{Fore.GREEN}{ip:<15}{Style.RESET_ALL} -> {Fore.BLUE}{hostname}{Style.RESET_ALL}")
                         
                         # Store for file output
                         resolved_hosts.append((ip, hostname))
                     
-                except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
-                    pass
+                except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer, dns.resolver.Timeout):
+                    pass # Skip if no PTR record exists or timeout
                 except Exception as e:
-                    # print(f"  [Debug] PTR lookup failed for {ip}: {e}") # Debugging long timeouts
                     pass
+                pbar.update(1) # Ensure update is called regardless of success/failure
         
     except ValueError:
         print(Fore.RED + f"Error: Invalid CIDR format: {cidr_range}" + Style.RESET_ALL)
@@ -1014,6 +1228,7 @@ def run_option_5(target_input, output_file):
     for cidr in cidrs:
         all_resolved.extend(o5_resolve_cidr_range(cidr))
 
+    # The actual output file for the aligned results
     final_resolved_file = output_file.replace(".txt", "_resolved.txt")
 
     if all_resolved:
@@ -1033,14 +1248,113 @@ def run_option_5(target_input, output_file):
             f.write(header + "\n")
             f.write(separator + "\n")
             
-            # Rows
-            for ip, host in sorted(all_resolved):
+            # Rows (Sorted by IP)
+            for ip, host in sorted(all_resolved, key=lambda x: ipaddress.ip_address(x[0])):
                 line = f"{ip:<{ip_max}} | {host:<{host_max}}"
                 f.write(line + "\n")
 
-        print(Fore.GREEN + f"\n[+] Clean resolved list saved to {final_resolved_file}" + Style.RESET_ALL)
+        # FIX FOR SYNTAXERROR: Changed f-string concatenation to a single print
+        print(Fore.GREEN + "\n[+] Clean resolved list saved to " + final_resolved_file + Style.RESET_ALL)
     else:
         print(Fore.RED + "[-] No hosts with names found." + Style.RESET_ALL)
+
+
+# ==============================================================================
+# ------------------------- OPTION 6: WORDLIST DNS SCAN --------------------------
+# ==============================================================================
+
+def o6_check_domain_existence(entry, base_domain):
+    """Checks if a wordlist entry is a resolvable domain/subdomain."""
+    entry = entry.strip()
+    if not entry:
+        return None
+
+    if "." in entry:
+        # If the wordlist entry is a full domain (e.g., mail.example.com), check it directly
+        full_domain = entry
+    else:
+        # Otherwise, assume it is a subdomain (e.g., www, mail, blog)
+        full_domain = f"{entry}.{base_domain}"
+
+    try:
+        # Attempt to resolve the A record
+        # Note: Using dns.resolver is better for parallel lookups than socket.gethostbyname
+        answers = dns.resolver.resolve(full_domain, 'A', lifetime=DEFAULT_TIMEOUT)
+        
+        # If resolution is successful, return the domain and its IP
+        ip_address = str(answers[0])
+        return full_domain, ip_address
+
+    except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN, dns.exception.Timeout):
+        return None
+    except Exception:
+        return None
+
+def run_option_6(base_domain, wordlist_path, output_file):
+    """
+    Performs a concurrent DNS scan using a wordlist against a base domain.
+    The base_domain is the 'target' input. The wordlist_path is the second input.
+    """
+    
+    print(Fore.YELLOW + f"[*] Target Base Domain: {base_domain}" + Style.RESET_ALL)
+    print(Fore.YELLOW + f"[*] Wordlist Path: {wordlist_path}" + Style.RESET_ALL)
+
+    try:
+        with open(wordlist_path, 'r') as f:
+            entries = [line.strip() for line in f if line.strip()]
+    except Exception as e:
+        print(Fore.RED + f"Error: Failed to read wordlist: {e}" + Style.RESET_ALL)
+        return
+
+    print(Fore.CYAN + f"[*] Loaded {len(entries)} entries from the wordlist." + Style.RESET_ALL)
+    
+    found_hosts = []
+    
+    # Use ThreadPoolExecutor for concurrent DNS queries
+    with concurrent.futures.ThreadPoolExecutor(max_workers=O1_DEFAULT_WORKERS) as executor:
+        # Submit tasks for each entry
+        future_to_entry = {
+            executor.submit(o6_check_domain_existence, entry, base_domain): entry
+            for entry in entries
+        }
+        
+        # Use tqdm for a progress bar
+        for future in tqdm(concurrent.futures.as_completed(future_to_entry), 
+                           total=len(future_to_entry), desc="Resolving", colour='BLUE'):
+            
+            result = future.result()
+            if result:
+                found_hosts.append(result)
+
+    # Output Results
+    if found_hosts:
+        try:
+            with open(output_file, 'w') as f:
+                f.write("Host,IP_Address\n") # CSV Header
+                
+                print(Fore.GREEN + f"\n[+] Scan complete. {len(found_hosts)} live hosts found." + Style.RESET_ALL)
+                
+                # Determine max widths for alignment
+                host_max = max(len(h) for h, ip in found_hosts) if found_hosts else 30
+                ip_max = max(len(ip) for h, ip in found_hosts) if found_hosts else 15
+                
+                header_text = f"{'Host':<{host_max}} | {'IP Address':<{ip_max}}"
+                separator = "-" * len(header_text)
+                
+                print(separator)
+                print(Fore.CYAN + header_text + Style.RESET_ALL)
+                print(separator)
+
+                for host, ip in sorted(found_hosts):
+                    f.write(f"{host},{ip}\n")
+                    print(f"{host:<{host_max}} | {ip:<{ip_max}}")
+                
+            print(Fore.GREEN + f"\n[+] Results written to {output_file}." + Style.RESET_ALL)
+
+        except Exception as e:
+            print(Fore.RED + f"Error: Failed to write output file: {e}" + Style.RESET_ALL)
+    else:
+        print(Fore.RED + "[-] No live hosts found from the wordlist." + Style.RESET_ALL)
 
 
 # ==============================================================================
@@ -1061,13 +1375,17 @@ def main_menu_loop():
         elif choice == '4':
             prompt_and_execute(4, "Enter domain or list file path to scan: ", run_option_4)
         elif choice == '5':
-            # Note: For Option 5, the raw output is CIDR.txt (not written here), and the clean aligned list is CIDR_resolved.txt
+            # Note: The output_file is "CIDR.txt" but the function writes to "CIDR_resolved.txt"
             prompt_and_execute(5, "Enter a CIDR (e.g., 1.1.1.0/24) or a list file path: ", run_option_5)
         elif choice == '6':
+            # NEW OPTION 6: Wordlist DNS Scan. Requires the base domain and the wordlist path.
+            prompt_and_execute(6, "Enter BASE domain to scan against (e.g., google.com): ", run_option_6, wordlist_required=True)
+        elif choice == '7':
+            # EXIT moved to 7
             print(Fore.GREEN + "\nExiting script. Goodbye!" + Style.RESET_ALL)
             sys.exit(0)
         else:
-            print(Fore.RED + "Invalid choice. Please enter a number between 1 and 6." + Style.RESET_ALL)
+            print(Fore.RED + "Invalid choice. Please enter a number between 1 and 7." + Style.RESET_ALL)
             time.sleep(1)
 
 if __name__ == "__main__":
