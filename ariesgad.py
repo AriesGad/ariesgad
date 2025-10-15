@@ -673,6 +673,60 @@ def o2_get_subdomains_from_anubis(domain):
     return list(subdomains)
 
 
+# --- NEW FUNCTION FOR subdomainfinder.c99.nl ---
+def o2_get_subdomains_from_subdomainfinder_c99(domain):
+    """
+    Scrapes subdomains from subdomainfinder.c99.nl.
+    No API key required, but relies on HTML structure which may break.
+    """
+    print(f"  [+] Querying subdomainfinder.c99.nl (Scraping)...")
+    # Using the existing O1_USER_AGENT
+    url = f"https://subdomainfinder.c99.nl/subdomain-finder/?domain={domain}"
+
+    try:
+        # Use a timeout and the standard User-Agent for politeness
+        response = requests.get(url, headers=O1_HEADERS, timeout=20) 
+        response.raise_for_status()
+        
+        subdomains = set()
+        
+        # We only need the part of the HTML where results are likely displayed.
+        # This page typically returns a raw list of domains found by the tool.
+        # We can look for the output text area or preformatted text.
+        # For simplicity, we'll look for text that matches a subdomain pattern.
+        
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # A common location is inside the 'table' or just general page text
+        # Look for text content that matches a full domain
+        # This regex looks for text that contains alphanumeric/dots/hyphens and ends with the domain
+        domain_pattern = re.compile(r'[a-zA-Z0-9.-]+\.' + re.escape(domain) + r'(?![a-zA-Z0-9.-])')
+        
+        # Search the entire page body text
+        body_text = soup.body.get_text('\n')
+        
+        found = domain_pattern.findall(body_text)
+        subdomains.update(d.lower().strip() for d in found)
+        
+        # Secondary check: Look for specific elements if structure changes
+        # e.g., for link text in the results table:
+        for link in soup.find_all('a', href=True):
+            text = link.text.strip()
+            if text.endswith(domain) and len(text) > len(domain):
+                subdomains.add(text.lower().strip())
+
+        # Filter out the base domain itself if it was accidentally included
+        subdomains.discard(domain)
+        
+        return list(subdomains)
+
+    except requests.exceptions.RequestException as e:
+        print(f"  {Fore.RED}[ERROR] subdomainfinder.c99.nl scraping failed: {e}{Style.RESET_ALL}")
+        return []
+
+# --- END NEW FUNCTION ---
+
+
 def run_option_2(target_input, output_file):
     """Main logic for Option 2: Subdomains Enumeration (Hardened Passive Sources)."""
 
@@ -686,7 +740,10 @@ def run_option_2(target_input, output_file):
         o2_get_subdomains_from_rapiddns,
         o2_get_subdomains_from_hackertarget_passive,
         o2_get_subdomains_from_alienvault_otx,
-        o2_get_subdomains_from_anubis
+        o2_get_subdomains_from_anubis,
+        # --- NEW SOURCE ADDED HERE ---
+        o2_get_subdomains_from_subdomainfinder_c99
+        # -----------------------------
     ]
     
     # List of API sources (only run if API key is not default)
