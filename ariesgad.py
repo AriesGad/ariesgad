@@ -54,7 +54,7 @@ CENSYS_SECRET = None
 
 # Option Configs
 DEFAULT_TIMEOUT = 8
-O1_DEFAULT_WORKERS = 20
+O1_DEFAULT_WORKERS = 10 # REDUCED from 20 to 10 to help prevent resource exhaustion (File Descriptor limit)
 O1_DEFAULT_PORTS = [80, 443, 8080, 8443]
 O1_USER_AGENT = "revagg/1.2 (AriesGad) - polite-recon"
 O1_HEADERS = {"User-Agent": O1_USER_AGENT}
@@ -189,7 +189,8 @@ def prompt_and_execute(option, prompt_text, exec_function, wordlist_required=Fal
         if option == 4:
             asyncio.run(exec_function(target, output_file))
         elif option == 6:
-            exec_function(target, wordlist_path, output_file) # Option 6 takes 3 arguments
+            # Option 6 takes 3 arguments
+            exec_function(target, wordlist_path, output_file) 
         else:
             exec_function(target, output_file)
     except Exception as e:
@@ -210,7 +211,21 @@ def prompt_and_execute(option, prompt_text, exec_function, wordlist_required=Fal
 # ------------------------------- OPTION 1: REVAGG -----------------------------
 # ==============================================================================
 
-# ... (run_option_1 and its helpers are unchanged) ...
+# FIX: Added thread-safe resolver for PTR lookups
+def o1_resolve_ptr(ip):
+    """Perform reverse DNS lookup (PTR) in a thread-safe manner."""
+    try:
+        # Create a new resolver for the thread (thread-safe)
+        resolver = dns.resolver.Resolver(configure=True)
+        resolver.timeout = 5.0
+        resolver.lifetime = 10.0
+        
+        rev_name = dns.reversename.from_address(ip)
+        answers = resolver.resolve(rev_name, 'PTR')
+        
+        return str(answers[0]).rstrip('.')
+    except Exception:
+        return None
 
 def o1_resolve_ip(host):
     """Resolve host to IP."""
@@ -413,12 +428,10 @@ def run_option_1(target, live_output_file):
 
     for ip in ips:
         print(f"  [+] Inspecting IP: {ip}")
-        # PTR lookup
-        try:
-            ptr = dns.reversename.from_address(ip).to_text().rstrip(".")
-            all_candidates.add(ptr)
-        except Exception:
-            pass
+        # PTR lookup - Using the thread-safe version now
+        ptr_host = o1_resolve_ptr(ip)
+        if ptr_host:
+            all_candidates.add(ptr_host)
             
         # Use both sources for better coverage
         all_candidates.update(o1_query_hackertarget(ip)) # Quick source
@@ -458,8 +471,6 @@ def run_option_1(target, live_output_file):
 # ==============================================================================
 # ------------------------- OPTION 2: SUBDOMAIN ENUMERATION --------------------
 # ==============================================================================
-
-# ... (run_option_2 and its helpers are unchanged) ...
 
 def o2_resolve_domain(full_domain):
     """Resolve the domain to IP if possible."""
@@ -753,8 +764,6 @@ def run_option_2(target_input, output_file):
 # ------------------------- OPTION 3: ISP ZERO-RATED CHECK ---------------------
 # ==============================================================================
 
-# ... (run_option_3 and its helpers are unchanged) ...
-
 def o3_resolve_domain(domain, resolver="8.8.8.8"):
     """Resolve domain to IPv4 and IPv6 addresses using a specific resolver."""
     ipv4s = set()
@@ -969,8 +978,6 @@ def run_option_3(target_input, output_file):
 # ------------------------- OPTION 4: WS/SSL/HTTP/SNI/CDN CHECK ----------------
 # ==============================================================================
 
-# ... (run_option_4 and its helpers are unchanged) ...
-
 def o4_get_cloudflare_ip_ranges():
     global O4_CLOUDFLARE_IPS
     if O4_CLOUDFLARE_IPS: return
@@ -1157,8 +1164,6 @@ async def run_option_4(target_input, output_file):
 # ------------------------- OPTION 5: CIDR RESOLUTION --------------------------
 # ==============================================================================
 
-# ... (run_option_5 and its helpers are unchanged) ...
-
 def o5_resolve_cidr_range(cidr_range):
     """
     Scans a CIDR range, resolves PTR records for each IP, and returns
@@ -1264,7 +1269,10 @@ def run_option_5(target_input, output_file):
 # ==============================================================================
 
 def o6_check_domain_existence(entry, base_domain):
-    """Checks if a wordlist entry is a resolvable domain/subdomain."""
+    """
+    FIXED: Uses a new, hardcoded, thread-safe resolver instance for DNS checks.
+    Checks if a wordlist entry is a resolvable domain/subdomain.
+    """
     entry = entry.strip()
     if not entry:
         return None
@@ -1276,10 +1284,23 @@ def o6_check_domain_existence(entry, base_domain):
         # Otherwise, assume it is a subdomain (e.g., www, mail, blog)
         full_domain = f"{entry}.{base_domain}"
 
+    # --- FINAL HARDENED FIX: Create a new resolver instance and HARDCODE nameservers ---
     try:
-        # Attempt to resolve the A record
-        # Note: Using dns.resolver is better for parallel lookups than socket.gethostbyname
-        answers = dns.resolver.resolve(full_domain, 'A', lifetime=DEFAULT_TIMEOUT)
+        # Crucial change: configure=False prevents reading /etc/resolv.conf
+        resolver = dns.resolver.Resolver(configure=False) 
+        # Hardcode reliable nameservers
+        resolver.nameservers = ['8.8.8.8', '1.1.1.1']   
+        resolver.timeout = DEFAULT_TIMEOUT
+        resolver.lifetime = DEFAULT_TIMEOUT * 2
+    except Exception as e:
+        # This error should now only occur if the dnspython library is broken.
+        print(Fore.RED + f"Resolver creation failed in thread: {e}" + Style.RESET_ALL)
+        return None
+    # ------------------------------------------------------------------------------------------
+
+    try:
+        # Use the locally defined, hardcoded, thread-safe resolver instance
+        answers = resolver.resolve(full_domain, 'A')
         
         # If resolution is successful, return the domain and its IP
         ip_address = str(answers[0])
@@ -1288,6 +1309,7 @@ def o6_check_domain_existence(entry, base_domain):
     except (dns.resolver.NoAnswer, dns.resolver.NXDOMAIN, dns.exception.Timeout):
         return None
     except Exception:
+        # Catch all other exceptions (e.g., temporary errors, configuration)
         return None
 
 def run_option_6(base_domain, wordlist_path, output_file):
@@ -1322,6 +1344,7 @@ def run_option_6(base_domain, wordlist_path, output_file):
         for future in tqdm(concurrent.futures.as_completed(future_to_entry), 
                            total=len(future_to_entry), desc="Resolving", colour='BLUE'):
             
+            # Check for results and store them
             result = future.result()
             if result:
                 found_hosts.append(result)
