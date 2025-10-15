@@ -55,7 +55,7 @@ pip install requests aiohttp dnspython colorama tqdm aiodns
 pip install aiodns
 
     
-##installation
+**installation:**
 
    ```bash
 git clone https://github.com/AriesGad/ariesgad.git
@@ -77,7 +77,7 @@ pip install -r requirements.txt
 python3 ariesgad.py
 
 
-## install SecLists:
+**install SecLists:**
 
    ```bash
 git clone https://github.com/danielmiessler/SecLists.git
