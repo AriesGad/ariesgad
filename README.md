@@ -35,68 +35,58 @@ The script requires **Python 3.7+**. All necessary Python libraries are listed i
     pip install -r requirements.txt
 
 **If Not Installing Try This**
-
    ```bash
 python3 -m venv venv
 
-```bash
 source venv/bin/activate
 
-```bash
 pip install -r requirements.txt
 
-    ```bash
 pip install requests aiohttp dnspython colorama tqdm
 
-    ```bash
 pip install requests aiohttp dnspython colorama tqdm aiodns
 
-    ```bash
 pip install aiodns
 
-    
+  
+  
 **installation:**
-
    ```bash
 git clone https://github.com/AriesGad/ariesgad.git
 
-   ```bash
+
 cd ariesgad
 
-   ```bash
 chmod +x ariesgad.py
 
-   ```bash
 pip install -r requirements.txt
 
-## Usage
+
+**Usage**
 
 ```Run the script from your terminal:
-
    ```bash
 python3 ariesgad.py
 
 
 **install SecLists:**
-
    ```bash
 git clone https://github.com/danielmiessler/SecLists.git
 
 
-# To run the Wordlist DNS Scan
+**To run the Wordlist DNS Scan:**
+```bash
 
-```(Good for quick scans (5,000 words).
+###(Good for quick scans (5,000 words).
 
-   ```bash
 SecLists/Discovery/DNS/subdomains-top1million-5000.txt
 
 
-```(​A classic subdomain list.)
+###(​A classic subdomain list.)
 
-   ```bash
 SecLists/Discovery/DNS/fierce-hostlist.txt
 
 
-```​(A very large, comprehensive list.)
-   ```bash
+###​(A very large, comprehensive list.)
+
 SecLists/Discovery/DNS/dns-Jhaddix.txt
